@@ -4,6 +4,21 @@ services:
     ports: ["11434:11434"]   # ← tu zostawiasz, bo chcesz odpytywać Ollama z hosta (CLI, curl)
     volumes: ["ollama_data:/root/.ollama"]
 
+  # Jednorazowy kontener: czeka aż serwer Ollama wstanie i pobiera modele,
+  # żeby samo `docker compose up` wystarczyło (bez ręcznego `ollama pull`).
+  # Modele lądują we wspólnym wolumenie ollama_data, więc kolejne starty są szybkie.
+  ollama-init:
+    image: ollama/ollama
+    depends_on: [ollama]
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "until ollama ps >/dev/null 2>&1; do echo 'waiting for ollama...'; sleep 1; done;
+       ollama pull nomic-embed-text &&
+       ollama pull qwen2.5:3b"
+    restart: "no"
+
   chromadb:
     image: chromadb/chroma:0.6.3   # ← pin do wersji klienta (chromadb==0.6.3), inaczej KeyError: '_type'
     user: root
@@ -17,7 +32,12 @@ services:
   rag-api:
     build: .
     ports: ["8080:8000"]     # ← host 8080 → kontener 8000 (uvicorn); eksponujesz tylko API
-    depends_on: [ollama, chromadb]
+    # rag-api startuje dopiero gdy modele są pobrane → pierwsze /ingest i /query nie zwrócą 500
+    depends_on:
+      chromadb:
+        condition: service_started
+      ollama-init:
+        condition: service_completed_successfully
     volumes: ["./docs:/app/docs"]
     environment:
       CHROMA_HOST: chromadb

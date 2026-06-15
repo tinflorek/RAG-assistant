@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG Assistant</title>
+  <style>
+    :root { --bg:#0f1115; --panel:#1a1d24; --border:#2a2f3a; --text:#e6e8ec; --muted:#9aa3b2; --accent:#4f8cff; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+           background:var(--bg); color:var(--text); }
+    .wrap { max-width: 820px; margin: 0 auto; padding: 24px 16px 64px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .sub { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px;
+             padding:16px; margin-bottom:16px; }
+    .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing:.5px;
+                color:var(--muted); margin:0 0 12px; }
+    .row { display:flex; gap:8px; }
+    input[type=text], input[type=file] { flex:1; background:#11141a; color:var(--text);
+      border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:14px; }
+    button { background:var(--accent); color:#fff; border:0; border-radius:8px;
+      padding:10px 16px; font-size:14px; cursor:pointer; white-space:nowrap; }
+    button:disabled { opacity:.5; cursor:default; }
+    button.ghost { background:transparent; border:1px solid var(--border); color:var(--muted); padding:4px 10px; }
+    .docs { list-style:none; padding:0; margin:0; }
+    .docs li { display:flex; align-items:center; justify-content:space-between;
+      padding:8px 0; border-bottom:1px solid var(--border); font-size:14px; }
+    .docs li:last-child { border-bottom:0; }
+    .docs .meta { color:var(--muted); font-size:12px; }
+    .empty { color:var(--muted); font-size:14px; }
+    #answer { white-space:pre-wrap; line-height:1.55; font-size:15px; }
+    .sources { margin-top:14px; padding-top:12px; border-top:1px solid var(--border); }
+    .sources h3 { font-size:12px; text-transform:uppercase; color:var(--muted); margin:0 0 8px; }
+    .src { font-size:13px; color:var(--muted); padding:2px 0; }
+    .status { font-size:13px; margin-top:8px; min-height:18px; }
+    .status.err { color:#ff6b6b; }
+    .status.ok { color:#4ade80; }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border);
+      border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; vertical-align:-2px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>RAG Assistant</h1>
+    <div class="sub">Upload a PDF, Markdown, or text file, then ask questions grounded in it.</div>
+
+    <div class="panel">
+      <h2>Documents</h2>
+      <div class="row">
+        <input type="file" id="file" accept=".pdf,.md,.txt" />
+        <button id="uploadBtn" onclick="upload()">Upload</button>
+      </div>
+      <div class="status" id="uploadStatus"></div>
+      <ul class="docs" id="docs"></ul>
+    </div>
+
+    <div class="panel">
+      <h2>Ask a question</h2>
+      <div class="row">
+        <input type="text" id="question" placeholder="What is this document about?"
+               onkeydown="if(event.key==='Enter') ask()" />
+        <button id="askBtn" onclick="ask()">Ask</button>
+      </div>
+      <div class="status" id="askStatus"></div>
+    </div>
+
+    <div class="panel" id="answerPanel" style="display:none">
+      <h2>Answer</h2>
+      <div id="answer"></div>
+      <div class="sources" id="sourcesBox" style="display:none">
+        <h3>Sources</h3>
+        <div id="sources"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadDocs() {
+      const el = document.getElementById('docs');
+      try {
+        const res = await fetch('/documents');
+        const docs = await res.json();
+        if (!docs.length) {
+          el.innerHTML = '<li class="empty">No documents indexed yet.</li>';
+          return;
+        }
+        el.innerHTML = docs.map(d => `
+          <li>
+            <span>${escapeHtml(d.source)} <span class="meta">(${d.chunks} chunks)</span></span>
+            <button class="ghost" onclick="del('${encodeURIComponent(d.source)}')">Delete</button>
+          </li>`).join('');
+      } catch (e) {
+        el.innerHTML = '<li class="empty">Could not reach the API.</li>';
+      }
+    }
+
+    async function upload() {
+      const input = document.getElementById('file');
+      const status = document.getElementById('uploadStatus');
+      const btn = document.getElementById('uploadBtn');
+      if (!input.files.length) { setStatus(status, 'Choose a file first.', 'err'); return; }
+
+      const data = new FormData();
+      data.append('file', input.files[0]);
+      btn.disabled = true;
+      setStatus(status, '<span class="spinner"></span> Ingesting…');
+      try {
+        const res = await fetch('/ingest', { method: 'POST', body: data });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || 'Upload failed');
+        setStatus(status, `Ingested ${escapeHtml(body.file)}.`, 'ok');
+        input.value = '';
+        loadDocs();
+      } catch (e) {
+        setStatus(status, escapeHtml(e.message), 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function del(source) {
+      try {
+        await fetch('/documents/' + source, { method: 'DELETE' });
+        loadDocs();
+      } catch (e) {}
+    }
+
+    async function ask() {
+      const q = document.getElementById('question').value.trim();
+      const status = document.getElementById('askStatus');
+      const btn = document.getElementById('askBtn');
+      if (!q) { setStatus(status, 'Type a question first.', 'err'); return; }
+
+      btn.disabled = true;
+      setStatus(status, '<span class="spinner"></span> Thinking… (first query loads the model and is slow)');
+      try {
+        const res = await fetch('/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: q }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || 'Query failed');
+        showAnswer(body);
+        setStatus(status, '');
+      } catch (e) {
+        setStatus(status, escapeHtml(e.message), 'err');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function showAnswer(body) {
+      document.getElementById('answerPanel').style.display = 'block';
+      document.getElementById('answer').textContent = body.answer;
+      const box = document.getElementById('sourcesBox');
+      const list = document.getElementById('sources');
+      if (body.sources && body.sources.length) {
+        box.style.display = 'block';
+        list.innerHTML = body.sources.map(s =>
+          `<div class="src">[${escapeHtml(s.source)}, chunk ${s.chunk_index}] · similarity ${s.score}</div>`
+        ).join('');
+      } else {
+        box.style.display = 'none';
+      }
+    }
+
+    function setStatus(el, html, cls) {
+      el.className = 'status' + (cls ? ' ' + cls : '');
+      el.innerHTML = html;
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c =>
+        ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+
+    loadDocs();
+  </script>
+</body>
+</html>

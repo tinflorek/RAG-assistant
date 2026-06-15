@@ -1,6 +1,7 @@
 # app/main.py
 import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import shutil
 from pathlib import Path
@@ -21,6 +22,11 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: list[dict]
+
+
+@app.get("/")
+def index():
+    return FileResponse(Path(__file__).parent / "index.html")
 
 
 @app.get("/health")
@@ -57,6 +63,7 @@ def documents():
 def delete_document_endpoint(filename: str):
     if not delete_document(filename):
         raise HTTPException(status_code=404, detail=f"'{filename}' is not indexed")
+    (DOCS_DIR / Path(filename).name).unlink(missing_ok=True)
     return {"status": "deleted", "file": filename}
 
 
