@@ -25,7 +25,7 @@ class DocumentExistsError(ValueError):
 
 def load_pdf(path: str) -> str:
     reader = PdfReader(path)
-    return "\n".join(page.extract_text() for page in reader.pages)
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 def load_text(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")

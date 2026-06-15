@@ -42,6 +42,7 @@ def ingest_file(file: UploadFile = File(...)):
     except DocumentExistsError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
+        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=str(e))
 
     return {"status": "ingested", "file": file.filename}
