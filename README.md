@@ -40,7 +40,8 @@ vectors are stored in [Chroma](https://www.trychroma.com/), and the HTTP layer i
 ```
 .
 ├── app/
-│   ├── main.py        # FastAPI app: /health, /ingest, /query
+│   ├── main.py        # FastAPI app: web UI + /health, /ingest, /query, /documents
+│   ├── index.html     # self-contained web UI served at /
 │   ├── ingest.py      # load → chunk → embed → store in Chroma
 │   └── query.py       # embed question → retrieve → LLM answer
 ├── docs/              # documents to ingest (mounted into the container)
@@ -54,34 +55,40 @@ vectors are stored in [Chroma](https://www.trychroma.com/), and the HTTP layer i
 
 | Method | Path      | Description                                                        |
 | ------ | --------- | ----------------------------------------------------------------- |
+| GET    | `/`                    | Web UI — upload documents, ask questions, manage indexed docs    |
 | GET    | `/health`              | Liveness check → `{"status": "ok"}`                              |
 | POST   | `/ingest`              | Upload a `.pdf` / `.md` / `.txt` file (multipart) and index it. Re-uploading an already-indexed filename returns **409** — delete it first |
 | GET    | `/documents`           | List indexed documents → `[{"source": ..., "chunks": N}, ...]`   |
-| DELETE | `/documents/{filename}`| Remove all chunks for a document (404 if not indexed)            |
+| DELETE | `/documents/{filename}`| Remove a document — deletes its chunks **and** the uploaded file from `docs/` (404 if not indexed) |
 | POST   | `/query`               | Body `{"question": "..."}` → `{"answer": ..., "sources": [...]}`. Chunks below the similarity floor are dropped; if none qualify, the answer says so and `sources` is empty |
 
-Interactive docs are available at `/docs` (Swagger) once the API is running.
+A browser UI is served at `/` (the simplest way to use the app), and interactive
+API docs are at `/docs` (Swagger) once the API is running.
 
 ## Running with Docker (recommended)
 
 ```bash
-# 1. Start the stack
+# Start the whole stack — that's it.
 docker compose up -d --build
+```
 
-# 2. Pull the models into the Ollama container (first run only; persisted in a volume)
-docker compose exec ollama ollama pull nomic-embed-text
-docker compose exec ollama ollama pull qwen2.5:3b
+On first run the `ollama-init` service automatically pulls both models before the
+API starts, so no manual `ollama pull` is needed. Then **open
+<http://localhost:8080> in your browser** to upload documents and ask questions.
 
-# 3. Use the API (exposed on host port 8080)
+Prefer the command line? The same endpoints are on host port 8080:
+
+```bash
 curl -F "file=@docs/test.pdf" http://localhost:8080/ingest
 curl -X POST http://localhost:8080/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What is this document about?"}'
 ```
 
-> The models live in the `ollama_data` named volume, so they survive restarts.
-> Use `docker compose down` to stop; avoid `down -v`, which **wipes the volumes**
-> (models and the vector store).
+> The first run downloads ~2 GB of models; they live in the `ollama_data` named
+> volume, so later starts are fast and need no re-pull. Use `docker compose down`
+> to stop; avoid `down -v`, which **wipes the volumes** (models and the vector
+> store).
 
 ## Running locally (without Docker)
 
