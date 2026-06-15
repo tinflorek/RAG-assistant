@@ -17,6 +17,10 @@ CLAUDE.local.md
 # Vector store data
 chroma_data/
 
+# Uploaded documents (keep the sample)
+docs/*
+!docs/test.pdf
+
 # Local env & runtime logs
 .env
 chroma.log
