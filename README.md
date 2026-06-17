@@ -10,19 +10,25 @@ vectors are stored in [Chroma](https://www.trychroma.com/), and the HTTP layer i
 ## How it works
 
 ```
-          ┌──────────── ingest ────────────┐         ┌──────────── query ───────────┐
- PDF/MD/TXT → chunk (512/50) → embed ──────►  Chroma  ◄──── embed(question) ── retrieve top-3
-                              (nomic-embed-text)  │                                  │
-                                                  └──── chunks ──► LLM (qwen2.5:3b) ─┘
-                                                                   → answer + citations
+          ┌──────────── ingest ────────────┐         ┌─────────────── query (agent loop) ──────────────┐
+ PDF/MD/TXT → chunk (512/50) → embed ──────►  Chroma  ◄── search_documents(query) ──┐                    │
+                              (nomic-embed-text)  │                                  │  LLM (qwen2.5:3b)  │
+                                                  └──── chunks ──────────────────────┘  decides & loops  │
+                                                                                        → answer + cites │
+                                                                       └─────────────────────────────────┘
 ```
 
 1. **Ingest** — a document is loaded, split into ~512-character chunks (50-char
    overlap), embedded with `nomic-embed-text`, and stored in a Chroma collection
    named `documents` (cosine similarity).
-2. **Query** — the question is embedded, the top 3 most similar chunks are
-   retrieved, and `qwen2.5:3b` answers using only that context, citing sources as
-   `[filename, chunk N]`.
+2. **Query (agentic)** — instead of a single fixed retrieval, `qwen2.5:3b` is given
+   two tools and drives retrieval itself: `search_documents(query)` (embed a query,
+   return the top matching chunks above the similarity floor) and `list_documents()`
+   (see what is indexed). The model searches as many times as it needs — refining or
+   issuing separate queries for multi-part questions — then answers grounded only in
+   what it retrieved, citing sources as `[filename, chunk N]`. The loop is capped at
+   `MAX_STEPS` (5) tool-calling rounds, after which a final answer is forced. Sources
+   from every search are aggregated and deduplicated across the run.
 
 ## Stack
 
@@ -43,7 +49,7 @@ vectors are stored in [Chroma](https://www.trychroma.com/), and the HTTP layer i
 │   ├── main.py        # FastAPI app: web UI + /health, /ingest, /query, /documents
 │   ├── index.html     # self-contained web UI served at /
 │   ├── ingest.py      # load → chunk → embed → store in Chroma
-│   └── query.py       # embed question → retrieve → LLM answer
+│   └── query.py       # agent loop: LLM drives search_documents/list_documents tools → answer
 ├── docs/              # documents to ingest (mounted into the container)
 ├── Dockerfile         # uv-based image for the API
 ├── docker-compose.yml # ollama + chromadb + rag-api
@@ -60,7 +66,7 @@ vectors are stored in [Chroma](https://www.trychroma.com/), and the HTTP layer i
 | POST   | `/ingest`              | Upload a `.pdf` / `.md` / `.txt` file (multipart) and index it. Re-uploading an already-indexed filename returns **409** — delete it first |
 | GET    | `/documents`           | List indexed documents → `[{"source": ..., "chunks": N}, ...]`   |
 | DELETE | `/documents/{filename}`| Remove a document — deletes its chunks **and** the uploaded file from `docs/` (404 if not indexed) |
-| POST   | `/query`               | Body `{"question": "..."}` → `{"answer": ..., "sources": [...]}`. Chunks below the similarity floor are dropped; if none qualify, the answer says so and `sources` is empty |
+| POST   | `/query`               | Body `{"question": "..."}` → `{"answer": ..., "sources": [...]}`. The LLM agentically calls `search_documents`/`list_documents` to gather context (chunks below the similarity floor are dropped); if nothing relevant is found, the answer says so and `sources` is empty |
 
 A browser UI is served at `/` (the simplest way to use the app), and interactive
 API docs are at `/docs` (Swagger) once the API is running.
