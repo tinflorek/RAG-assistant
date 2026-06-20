@@ -22,6 +22,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     sources: list[dict]
+    unsupported_citations: list[dict] = []
 
 
 @app.get("/")
@@ -73,4 +74,8 @@ def query_endpoint(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
     result: QueryResult = query(req.question)
-    return QueryResponse(answer=result.answer, sources=result.sources)
+    return QueryResponse(
+        answer=result.answer,
+        sources=result.sources,
+        unsupported_citations=result.unsupported_citations,
+    )

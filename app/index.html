@@ -36,6 +36,8 @@
     .status { font-size:13px; margin-top:8px; min-height:18px; }
     .status.err { color:#ff6b6b; }
     .status.ok { color:#4ade80; }
+    .warn { margin-top:14px; padding:10px 12px; border-radius:8px; font-size:13px;
+      background:#3a2a12; border:1px solid #6b4f1f; color:#f0c674; }
     .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border);
       border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; vertical-align:-2px; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -69,6 +71,7 @@
     <div class="panel" id="answerPanel" style="display:none">
       <h2>Answer</h2>
       <div id="answer"></div>
+      <div class="warn" id="warnBox" style="display:none"></div>
       <div class="sources" id="sourcesBox" style="display:none">
         <h3>Sources</h3>
         <div id="sources"></div>
@@ -155,6 +158,17 @@
     function showAnswer(body) {
       document.getElementById('answerPanel').style.display = 'block';
       document.getElementById('answer').textContent = body.answer;
+
+      const warn = document.getElementById('warnBox');
+      const bad = body.unsupported_citations || [];
+      if (bad.length) {
+        warn.style.display = 'block';
+        warn.innerHTML = '⚠ The model cited sources that were not retrieved: ' +
+          bad.map(c => `[${escapeHtml(c.source)}, chunk ${c.chunk_index}]`).join(', ');
+      } else {
+        warn.style.display = 'none';
+      }
+
       const box = document.getElementById('sourcesBox');
       const list = document.getElementById('sources');
       if (body.sources && body.sources.length) {

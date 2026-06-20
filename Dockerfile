@@ -24,6 +24,12 @@ COPY app/ ./
 # Put the venv on PATH so `uvicorn` resolves
 ENV PATH="/app/.venv/bin:$PATH"
 
+# Pre-bake the cross-encoder reranker into the image so the first /query isn't
+# slow or dependent on network access at runtime. Cached at a fixed path that the
+# app reads back via FASTEMBED_CACHE_PATH.
+ENV FASTEMBED_CACHE_PATH=/app/.fastembed_cache
+RUN python -c "from fastembed.rerank.cross_encoder import TextCrossEncoder; TextCrossEncoder(model_name='Xenova/ms-marco-MiniLM-L-6-v2')"
+
 EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

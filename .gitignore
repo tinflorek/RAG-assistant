@@ -24,3 +24,9 @@ docs/*
 # Local env & runtime logs
 .env
 chroma.log
+
+# macOS
+.DS_Store
+
+# Generated eval output (fixture + golden set are committed)
+eval/report.json

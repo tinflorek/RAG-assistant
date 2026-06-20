@@ -1,5 +1,6 @@
 # app/query.py
 import os
+import re
 import json
 import logging
 import ollama
@@ -7,6 +8,7 @@ import chromadb
 from dataclasses import dataclass
 
 from ingest import list_documents
+from retrieval import hybrid_search
 
 # chromadb 0.6.3 wywołuje posthog.capture() z niezgodną sygnaturą i loguje błąd
 # telemetryczny przy każdym starcie klienta — wyciszamy ten konkretny logger.
@@ -21,6 +23,9 @@ EMBED_MODEL = "nomic-embed-text"
 LLM_MODEL = "qwen2.5:3b"
 TOP_K = 3
 SIMILARITY_THRESHOLD = float(os.getenv("SIMILARITY_THRESHOLD", "0.4"))
+# "hybrid" (vector+BM25+rerank) by default; "vector" keeps the original dense-only
+# path — used to measure the eval delta and as a fallback if the reranker can't load.
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", "hybrid")
 MAX_STEPS = 5  # cap on agent tool-calling rounds before forcing a final answer
 
 ollama_client = ollama.Client(host=f"http://{OLLAMA_HOST}:{OLLAMA_PORT}")
@@ -72,6 +77,27 @@ TOOLS = [
 class QueryResult:
     answer: str
     sources: list[dict]
+    unsupported_citations: list[dict]
+
+
+# Matches citations the model writes inline, e.g. "[handbook.md, chunk 3]".
+CITATION_RE = re.compile(r"\[([^\],]+),\s*chunk\s*(\d+)\]")
+
+
+def verify_citations(answer: str, sources_acc: list[dict]) -> list[dict]:
+    """Return any [filename, chunk N] citation that was never actually retrieved.
+
+    The answer text is left untouched — callers decide how to surface these.
+    """
+    retrieved = {(s["source"], s["chunk_index"]) for s in sources_acc}
+    unsupported = []
+    seen = set()
+    for source, chunk in CITATION_RE.findall(answer):
+        key = (source.strip(), int(chunk))
+        if key not in retrieved and key not in seen:
+            seen.add(key)
+            unsupported.append({"source": key[0], "chunk_index": key[1]})
+    return unsupported
 
 def embed(text: str) -> list[float]:
     return ollama_client.embeddings(model=EMBED_MODEL, prompt=text)["embedding"]
@@ -88,11 +114,18 @@ def build_context(matches: list[dict]) -> str:
         f"[{m['source']}, chunk {m['chunk_index']}]\n{m['document']}" for m in matches
     )
 
-def search_documents(query_text: str, collection, sources_acc: list[dict]) -> str:
-    """Tool: retrieve relevant chunks and record their sources for citation."""
-    results = retrieve(embed(query_text), collection)
+def search(query_text: str, collection, top_k: int = TOP_K) -> list[dict]:
+    """Retrieve the most relevant chunks for a query.
 
-    matches = [
+    Stable seam used by both search_documents (the agent tool) and the eval harness;
+    the retrieval strategy behind it can change without touching callers.
+    """
+    if RETRIEVAL_MODE == "hybrid":
+        return hybrid_search(query_text, collection, top_k=top_k)
+
+    # vector-only baseline: dense top-k filtered by the cosine-similarity floor.
+    results = retrieve(embed(query_text), collection)
+    return [
         {
             "source": meta["source"],
             "chunk_index": meta["chunk_index"],
@@ -103,7 +136,12 @@ def search_documents(query_text: str, collection, sources_acc: list[dict]) -> st
             results["documents"][0], results["metadatas"][0], results["distances"][0]
         )
         if 1 - dist >= SIMILARITY_THRESHOLD
-    ]
+    ][:top_k]
+
+
+def search_documents(query_text: str, collection, sources_acc: list[dict]) -> str:
+    """Tool: retrieve relevant chunks and record their sources for citation."""
+    matches = search(query_text, collection)
 
     seen = {(s["source"], s["chunk_index"]) for s in sources_acc}
     for m in matches:
@@ -136,7 +174,12 @@ def query(question: str) -> QueryResult:
 
         tool_calls = msg.get("tool_calls")
         if not tool_calls:
-            return QueryResult(answer=msg["content"], sources=sources_acc)
+            answer = msg["content"]
+            return QueryResult(
+                answer=answer,
+                sources=sources_acc,
+                unsupported_citations=verify_citations(answer, sources_acc),
+            )
 
         for call in tool_calls:
             name = call["function"]["name"]
@@ -151,7 +194,12 @@ def query(question: str) -> QueryResult:
 
     # Tool budget exhausted — force one final answer without tools.
     final = ollama_client.chat(model=LLM_MODEL, messages=messages)
-    return QueryResult(answer=final["message"]["content"], sources=sources_acc)
+    answer = final["message"]["content"]
+    return QueryResult(
+        answer=answer,
+        sources=sources_acc,
+        unsupported_citations=verify_citations(answer, sources_acc),
+    )
 
 if __name__ == "__main__":
     import sys
@@ -163,3 +211,7 @@ if __name__ == "__main__":
     print("\n=== SOURCES ===")
     for s in result.sources:
         print(f"  {s['source']} | chunk {s['chunk_index']} | similarity {s['score']}")
+    if result.unsupported_citations:
+        print("\n=== UNSUPPORTED CITATIONS (not retrieved) ===")
+        for c in result.unsupported_citations:
+            print(f"  {c['source']} | chunk {c['chunk_index']}")
